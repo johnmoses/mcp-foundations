@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Streaming LLM Chat</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 flex flex-col items-center p-6 min-h-screen">
+  <h1 class="text-3xl font-bold mb-6">Streaming LLM Chat</h1>
+
+  <div id="login-section" class="mb-6 w-full max-w-md">
+    <input id="username" type="text" placeholder="Enter username" class="w-full p-3 rounded border" />
+    <button id="login-btn" class="mt-2 w-full bg-blue-600 text-white p-3 rounded hover:bg-blue-700">Login</button>
+  </div>
+
+  <div id="chat-section" class="hidden flex flex-col w-full max-w-md bg-white rounded shadow p-4">
+    <div id="messages" class="flex-grow overflow-y-auto h-96 mb-4 border rounded p-3 bg-gray-50"></div>
+    <div class="flex">
+      <input id="input" type="text" placeholder="Type your message..." class="flex-grow p-3 border rounded" />
+      <button id="send-btn" class="ml-2 bg-green-600 text-white p-3 rounded hover:bg-green-700">Send</button>
+    </div>
+  </div>
+
+<script>
+  let token = null;
+  let ws = null;
+  let sessionId = null;
+
+  const loginSection = document.getElementById("login-section");
+  const chatSection = document.getElementById("chat-section");
+  const messagesDiv = document.getElementById("messages");
+  const input = document.getElementById("input");
+  const usernameInput = document.getElementById("username");
+  const loginBtn = document.getElementById("login-btn");
+  const sendBtn = document.getElementById("send-btn");
+
+  function appendMessage(sender, text) {
+    const p = document.createElement("p");
+    p.className = sender === "You" ? "text-right text-blue-700" : "text-left text-gray-800";
+    p.textContent = `${sender}: ${text}`;
+    messagesDiv.appendChild(p);
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+  }
+
+  loginBtn.onclick = async () => {
+    const username = usernameInput.value.trim();
+    if (!username) return alert("Please enter username");
+
+    const res = await fetch("/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ username }),
+    });
+    if (!res.ok) {
+      alert("Login failed");
+      return;
+    }
+    const data = await res.json();
+    token = data.access_token;
+
+    loginSection.style.display = "none";
+    chatSection.style.display = "flex";
+
+    ws = new WebSocket(`ws://${location.host}/ws/chat?token=${token}`);
+
+    ws.onopen = () => appendMessage("System", "Connected to chat server");
+    ws.onclose = () => appendMessage("System", "Disconnected from server");
+    ws.onerror = (e) => appendMessage("System", "WebSocket error");
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.result && data.result.content) {
+        const text = data.result.content[0]?.text || "";
+        if (text) {
+          appendMessage("Assistant", text);
+        }
+      }
+    };
+  };
+
+  sendBtn.onclick = () => {
+    const msg = input.value.trim();
+    if (!msg || !ws || ws.readyState !== WebSocket.OPEN) return;
+    appendMessage("You", msg);
+
+    const request = {
+      jsonrpc: "2.0",
+      id: Date.now(),
+      method: "call_tool",
+      params: {
+        tool: "llm_chat",
+        arguments: { prompt: msg, session_id: sessionId || "" }
+      }
+    };
+    ws.send(JSON.stringify(request));
+    input.value = "";
+  };
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") sendBtn.onclick();
+  });
+</script>
+</body>
+</html>
