@@ -1,14 +1,16 @@
-# APP 3 - Simple MCP Client-Server Communication
+# Model Context Protocol (MCP) - More Enhanced Example
 
-In this section, we will add more features as follows:
+## Introduction
 
-- More commands (add, multiply, subtract, divide)
-- Persistent session context (chat history stored per session)
-- Integration with an external API (example: fetching a simple weather report)
-- Async streaming responses (simulated for demonstration)
-- Basic UI integration hint (via structured output for easy frontend rendering)
+In this section,`FastMCP` automatically generates MCP tool definitions from Python type hints and docstrings. The `chat` tool keeps a simple conversation history in memory and echoes back messages. The client has an interractive part that gets user messages and send to the server that echoes it.
 
-How to run the application.
+## Setup
+
+```bash
+pip install mcp langchain langchain-mcp-adapters langgraph langchain-community llama-cpp-python
+```
+
+## How to run the application
 
 Open one terminal and enter the code below to start the server.
 
@@ -21,3 +23,5 @@ Open another terminal and enter the code below to start the client.
 ```bash
 python client.py
 ```
+
+## Sample User Queries

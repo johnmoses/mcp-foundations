@@ -1,16 +1,27 @@
-# APP 3 - Simple MCP Client-Server Communication
+# Model Context Protocol (MCP) - More Enhanced Example
 
-In this section, we will add more features as follows:
+## Introduction
 
-- Flask API
-- LLM
+In this section,`FastMCP` automatically generates MCP tool definitions from Python type hints and docstrings. The `chat` tool keeps a simple conversation history in memory and echoes back messages. The client has an interractive part that gets user messages and send to the server that echoes it.
 
-How to run the application.
+## Setup
+
+```bash
+pip install mcp langchain langchain-mcp-adapters langgraph langchain-community llama-cpp-python
+```
+
+## How to run the application
 
 Open one terminal and enter the code below to start the server.
 
 ```bash
-uvicorn app:app --reload
+python server.py
 ```
 
-Visit the app at `http://127.0.0.1:8000`.
+Open another terminal and enter the code below to start the client.
+
+```bash
+python client.py
+```
+
+## Sample User Queries

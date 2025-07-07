@@ -17,6 +17,8 @@ async def display_tool_result(result):
 
 async def chat_loop(session: ClientSession):
     print("Chat session started. Type 'exit' or 'quit' to end.")
+    session_id = "user-session-1"  # simple static session id for demo
+
     while True:
         user_input = input("\nYou: ").strip()
         if user_input.lower() in ("exit", "quit"):
@@ -25,25 +27,27 @@ async def chat_loop(session: ClientSession):
         if not user_input:
             continue
 
-        # Client parses addition command
-        match_add = re.match(r"add (\d+) and (\d+)", user_input.lower())
-        if match_add:
-            a, b = int(match_add.group(1)), int(match_add.group(2))
-            result = await session.call_tool("add", {"a": a, "b": b})
-            await display_tool_result(result)
-            continue
-
-        # Client parses multiplication command
-        match_mul = re.match(r"multiply (\d+) and (\d+)", user_input.lower())
-        if match_mul:
-            a, b = int(match_mul.group(1)), int(match_mul.group(2))
-            result = await session.call_tool("multiply", {"a": a, "b": b})
-            await display_tool_result(result)
-            continue
-
-        # Fallback: send to chat tool
-        response = await session.call_tool("chat", {"message": user_input})
-        await display_tool_result(response)
+        # Client-side parsing for some commands to call dedicated tools
+        # Arithmetic commands
+        for cmd in ["add", "subtract", "multiply", "divide"]:
+            pattern = rf"{cmd} (\d+) and (\d+)"
+            match = re.match(pattern, user_input.lower())
+            if match:
+                a, b = int(match.group(1)), int(match.group(2))
+                result = await session.call_tool(cmd, {"a": a, "b": b})
+                await display_tool_result(result)
+                break
+        else:
+            # Weather command
+            match_weather = re.match(r"weather in ([a-zA-Z\s]+)", user_input.lower())
+            if match_weather:
+                location = match_weather.group(1).strip()
+                result = await session.call_tool("weather", {"location": location})
+                await display_tool_result(result)
+            else:
+                # Fallback: send to chat tool with session_id for context
+                response = await session.call_tool("chat", {"message": user_input, "session_id": session_id})
+                await display_tool_result(response)
 
 async def main():
     server_params = StdioServerParameters(

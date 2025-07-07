@@ -1,35 +1,5 @@
-# Model Context Protocol (MCP) Starter
+# Model Context Protocol (MCP) Foundations
 
-This is a basic or minimal example of MCP
+## Introduction
 
-## 1. Install Requirements
-
-```bash
-pip install flask requests mcp
-```
-
-## 2. Run Flask Server
-
-```bash
-python flask_server.py
-```
-
-## 2. Run MCP Server in another terminal
-
-```bash
-python mcp_server.py
-```
-
-Running tests
-
-## 3. Run Flask unit tests
-
-```bash
-pytest tests/test_flask_api.py
-```
-
-## 4. Run MCP unit tests
-
-```bash
-python -m unittest tests/test_mcp_api.py
-```
+MCP uses a client-server architecture where the server exposes tools (functions) that AI clients can call. Communication is via JSON-RPC 2.0 messages: requests, responses, and notifications. The server defines tools with schemas describing input parameters and returns structured results. MCP servers act as bridges connecting AI agents to live data or external APIs.

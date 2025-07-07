@@ -1,64 +1,105 @@
 import asyncio
+import json
 import re
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+from os.path import expanduser
 
-async def display_tool_result(result):
-    if isinstance(result, tuple) and len(result) == 2:
-        content_blocks, structured_data = result
-        print("\n--- Human-readable output ---")
-        for block in content_blocks:
-            if hasattr(block, "text"):
-                print(block.text)
-        print("\n--- Structured data ---")
-        print(structured_data)
-    else:
-        print("Result:", result)
+from mcp.client.stdio import stdio_client, StdioServerParameters
+from mcp import ClientSession
 
-async def chat_loop(session: ClientSession):
-    print("Chat session started. Type 'exit' or 'quit' to end.")
-    session_id = "user-session-1"  # simple static session id for demo
+from langchain_community.llms import LlamaCpp
 
-    while True:
-        user_input = input("\nYou: ").strip()
-        if user_input.lower() in ("exit", "quit"):
-            print("Ending chat session...")
-            break
-        if not user_input:
-            continue
+# Strict prompt asking for JSON-only output
+TOOL_SELECTION_PROMPT = """
+You are an assistant that can call these tools:
+- chat(message)
+- weather(city)
+- calculate(expression)
 
-        # Client-side parsing for some commands to call dedicated tools
-        # Arithmetic commands
-        for cmd in ["add", "subtract", "multiply", "divide"]:
-            pattern = rf"{cmd} (\d+) and (\d+)"
-            match = re.match(pattern, user_input.lower())
-            if match:
-                a, b = int(match.group(1)), int(match.group(2))
-                result = await session.call_tool(cmd, {"a": a, "b": b})
-                await display_tool_result(result)
-                break
+Given the user input, decide which tool to call and with what arguments.
+Respond with a JSON object ONLY, with this exact format (no extra text):
+
+{{"tool": "tool_name", "args": {{"param": "value"}}}}
+
+User input:
+{input}
+"""
+
+def extract_json_from_text(text):
+    """
+    Extract the first JSON object found in the text using regex.
+    Returns parsed JSON dict or None if not found/parseable.
+    """
+    try:
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
+            return json.loads(match.group())
+    except json.JSONDecodeError:
+        pass
+    return None
+
+def extract_result_content(call_tool_result):
+    """
+    Extract human-readable text from MCP CallToolResult object.
+    """
+    content_blocks = getattr(call_tool_result, "content", [])
+    if not content_blocks:
+        return str(call_tool_result)
+
+    texts = []
+    for block in content_blocks:
+        text = getattr(block, "text", None)
+        if text:
+            texts.append(text)
         else:
-            # Weather command
-            match_weather = re.match(r"weather in ([a-zA-Z\s]+)", user_input.lower())
-            if match_weather:
-                location = match_weather.group(1).strip()
-                result = await session.call_tool("weather", {"location": location})
-                await display_tool_result(result)
-            else:
-                # Fallback: send to chat tool with session_id for context
-                response = await session.call_tool("chat", {"message": user_input, "session_id": session_id})
-                await display_tool_result(response)
+            texts.append(str(block))
+    return "\n".join(texts)
 
 async def main():
+    model_path = expanduser("/Users/johnmoses/.cache/lm-studio/models/TheBloke/Llama-2-7B-Chat-GGUF/llama-2-7b-chat.Q4_K_M.gguf")  # Adjust path as needed
+
+    # Initialize LlamaCpp with deterministic output
+    llm = LlamaCpp(
+        model_path=model_path,
+        n_ctx=2048,
+        temperature=0,  # deterministic output
+        streaming=False,
+    )
+
     server_params = StdioServerParameters(
         command="python",
-        args=["server.py"],
+        args=["server.py"],  # Your MCP server script
     )
 
     async with stdio_client(server_params) as (reader, writer):
         async with ClientSession(reader, writer) as session:
             await session.initialize()
-            await chat_loop(session)
+            print("Connected to MCP server. Type 'quit' to exit.")
+
+            while True:
+                user_input = input("\nYou: ").strip()
+                if user_input.lower() == "quit":
+                    print("Goodbye!")
+                    break
+                if not user_input:
+                    continue
+
+                prompt = TOOL_SELECTION_PROMPT.format(input=user_input)
+                llm_response = llm(prompt)
+
+                tool_call = extract_json_from_text(llm_response)
+                if tool_call is None:
+                    print("Failed to parse LLM response. Defaulting to chat tool.")
+                    tool_name = "chat"
+                    args = {"message": user_input}
+                else:
+                    tool_name = tool_call.get("tool")
+                    args = tool_call.get("args", {})
+
+                try:
+                    response = await session.call_tool(tool_name, args)
+                    print(f"Agent ({tool_name}): {extract_result_content(response)}")
+                except Exception as e:
+                    print(f"Error calling tool '{tool_name}': {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())
