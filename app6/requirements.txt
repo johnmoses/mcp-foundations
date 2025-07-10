@@ -1,0 +1,8 @@
+flask
+pymilvus
+sentence-transformers
+llama-cpp-python
+langchain-mcp
+langchain-mcp-adapters
+langchain
+aiohttp
