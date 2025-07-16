@@ -1,105 +1,106 @@
 import asyncio
 import json
-import re
-from os.path import expanduser
+from llama_cpp import Llama
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
-from mcp.client.stdio import stdio_client, StdioServerParameters
-from mcp import ClientSession
+MODEL_PATH = "/Users/johnmoses/.cache/lm-studio/models/MaziyarPanahi/Meta-Llama-3-8B-Instruct-GGUF/Meta-Llama-3-8B-Instruct.Q4_K_M.gguf"
 
-from langchain_community.llms import LlamaCpp
 
-# Strict prompt asking for JSON-only output
-TOOL_SELECTION_PROMPT = """
-You are an assistant that can call these tools:
-- chat(message)
-- weather(city)
-- calculate(expression)
+class LocalLlamaCompletionProvider:
+    def __init__(self, model_path):
+        self.llm = Llama(model_path=model_path)
 
-Given the user input, decide which tool to call and with what arguments.
-Respond with a JSON object ONLY, with this exact format (no extra text):
+    def build_prompt(self, conversation_history: str, user_message: str) -> str:
+        system_prompt = (
+            "You are a helpful assistant managing a to-do list. "
+            "You can respond naturally or call tools by outputting JSON like:\n"
+            '{"tool_call": {"name": "tool_name", "arguments": { ... }}}\n'
+            "Only output JSON if you want to call a tool. Otherwise, answer naturally.\n\n"
+        )
+        few_shot_examples = """
+        User: Add a task to buy groceries.
+        Assistant: {"tool_call": {"name": "add_todo", "arguments": {"task": "buy groceries"}}}
 
-{{"tool": "tool_name", "args": {{"param": "value"}}}}
+        User: What tasks do I have?
+        Assistant: {"tool_call": {"name": "list_todos", "arguments": {}}}
 
-User input:
-{input}
-"""
+        User: Hello, how are you?
+        Assistant: I'm doing great! How can I assist you with your to-do list today?
+        """
+        return f"{system_prompt}{few_shot_examples}{conversation_history}\nUser: {user_message}\nAssistant:"
 
-def extract_json_from_text(text):
-    """
-    Extract the first JSON object found in the text using regex.
-    Returns parsed JSON dict or None if not found/parseable.
-    """
+    def generate(self, prompt: str, max_tokens=256, temperature=0.3):
+        response = self.llm(
+            prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stop=["\nUser:", "\nAssistant:"],
+        )
+        return response["choices"][0]["text"].strip()
+
+
+def parse_tool_call(assistant_output: str):
+    """Try to extract tool_call JSON from assistant output."""
     try:
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            return json.loads(match.group())
-    except json.JSONDecodeError:
-        pass
+        json_start = assistant_output.find("{")
+        json_end = assistant_output.rfind("}") + 1
+        if json_start == -1 or json_end == -1:
+            return None
+        json_str = assistant_output[json_start:json_end]
+        parsed = json.loads(json_str)
+        if "tool_call" in parsed:
+            return parsed["tool_call"]
+    except Exception:
+        return None
     return None
 
-def extract_result_content(call_tool_result):
-    """
-    Extract human-readable text from MCP CallToolResult object.
-    """
-    content_blocks = getattr(call_tool_result, "content", [])
-    if not content_blocks:
-        return str(call_tool_result)
-
-    texts = []
-    for block in content_blocks:
-        text = getattr(block, "text", None)
-        if text:
-            texts.append(text)
-        else:
-            texts.append(str(block))
-    return "\n".join(texts)
 
 async def main():
-    model_path = expanduser("/Users/johnmoses/.cache/lm-studio/models/TheBloke/Llama-2-7B-Chat-GGUF/llama-2-7b-chat.Q4_K_M.gguf")  # Adjust path as needed
-
-    # Initialize LlamaCpp with deterministic output
-    llm = LlamaCpp(
-        model_path=model_path,
-        n_ctx=2048,
-        temperature=0,  # deterministic output
-        streaming=False,
-    )
-
-    server_params = StdioServerParameters(
-        command="python",
-        args=["server.py"],  # Your MCP server script
-    )
-
+    server_params = StdioServerParameters(command="python", args=["server.py"])
     async with stdio_client(server_params) as (reader, writer):
         async with ClientSession(reader, writer) as session:
             await session.initialize()
-            print("Connected to MCP server. Type 'quit' to exit.")
+
+            completion_provider = LocalLlamaCompletionProvider(MODEL_PATH)
+            conversation_history = ""
+
+            print("Interactive MCP chat client with local LLM and tool calling")
+            print("Type 'exit' to quit.\n")
 
             while True:
-                user_input = input("\nYou: ").strip()
-                if user_input.lower() == "quit":
-                    print("Goodbye!")
+                user_input = input("You: ").strip()
+                if user_input.lower() in ("exit", "quit"):
                     break
-                if not user_input:
-                    continue
 
-                prompt = TOOL_SELECTION_PROMPT.format(input=user_input)
-                llm_response = llm(prompt)
+                prompt = completion_provider.build_prompt(
+                    conversation_history, user_input
+                )
+                assistant_output = completion_provider.generate(prompt)
 
-                tool_call = extract_json_from_text(llm_response)
-                if tool_call is None:
-                    print("Failed to parse LLM response. Defaulting to chat tool.")
-                    tool_name = "chat"
-                    args = {"message": user_input}
+                tool_call = parse_tool_call(assistant_output)
+
+                if tool_call:
+                    tool_name = tool_call.get("name")
+                    arguments = tool_call.get("arguments", {})
+                    print(
+                        f"LLM requested tool call: {tool_name} with arguments {arguments}"
+                    )
+                    try:
+                        result = await session.call_tool(tool_name, arguments)
+                        print(
+                            f"Tool '{tool_name}' result:\n{json.dumps(result.result, indent=2)}"
+                        )
+                        conversation_history += f"\nUser: {user_input}\nAssistant: {assistant_output}\nTool {tool_name} output: {json.dumps(result.result)}"
+                    except Exception as e:
+                        print(f"Error calling tool '{tool_name}': {e}")
+                        conversation_history += f"\nUser: {user_input}\nAssistant: Sorry, I failed to call the tool '{tool_name}'."
                 else:
-                    tool_name = tool_call.get("tool")
-                    args = tool_call.get("args", {})
+                    print(f"Assistant: {assistant_output}")
+                    conversation_history += (
+                        f"\nUser: {user_input}\nAssistant: {assistant_output}"
+                    )
 
-                try:
-                    response = await session.call_tool(tool_name, args)
-                    print(f"Agent ({tool_name}): {extract_result_content(response)}")
-                except Exception as e:
-                    print(f"Error calling tool '{tool_name}': {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())

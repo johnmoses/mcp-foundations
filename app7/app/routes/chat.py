@@ -1,51 +1,18 @@
-from flask import Blueprint, request, jsonify, render_template, session
+from flask import Blueprint, request, jsonify, render_template
 from flask_login import login_required, current_user
 from ..models.chat import ChatMessage
 from ..extensions import db
-from ..services.service import rag, call_llm
-from ..services.multi_agent import AgentOrchestrator, RagAgent, CalculatorAgent, QuizAgent
-from app.services.mcp_client import MCPClientWrapper
-
+from ..services.multi_agent import TodoAgent, CalculatorAgent, RAGAgent, AgentOrchestrator
+from ..services.mcp_client import MCPClientWrapper
+from ..services.service import llm
+import asyncio
+import logging
 
 chat_bp = Blueprint("chat", __name__, template_folder="../templates")
 
-# Initialize agents and orchestrator
-mcp_client = MCPClientWrapper("http://localhost:8000/mcp")
 
-rag_agent = RagAgent(mcp_client)
-calculator_agent = CalculatorAgent(mcp_client)
-quiz_agent = QuizAgent(mcp_client)
-
-orchestrator = AgentOrchestrator({
-    'rag': rag_agent,
-    'calculator': calculator_agent,
-    'quiz': quiz_agent,
-})
-
-def get_chat_history():
-    if "chat_history" not in session:
-        session["chat_history"] = []
-    return session["chat_history"]
-
-
-def save_chat_turn(user_msg, ai_msg):
-    history = get_chat_history()
-    history.append({"user": user_msg, "ai": ai_msg})
-    if len(history) > 10:
-        history.pop(0)
-    session["chat_history"] = history
-
-
-def format_history_for_rag(history):
-    """
-    Convert [{'user': ..., 'ai': ...}, ...] to
-    [{'role': 'user', 'content': ...}, {'role': 'assistant', 'content': ...}, ...]
-    """
-    formatted = []
-    for turn in history:
-        formatted.append({"role": "user", "content": turn["user"]})
-        formatted.append({"role": "assistant", "content": turn["ai"]})
-    return formatted
+def llm_callable(prompt, max_tokens=512, temperature=0.3):
+    return llm(prompt, max_tokens=max_tokens, temperature=temperature)
 
 
 @chat_bp.route("/", methods=["GET"])
@@ -62,36 +29,56 @@ def chat_page():
 
 @chat_bp.route("/message", methods=["POST"])
 @login_required
-def chat_message():
+async def chat_message():
     user_message = request.json.get("message", "").strip()
     if not user_message:
         return jsonify({"response": "Please enter a message."})
 
-    # Save user message in DB
-    user_msg_db = ChatMessage(user_id=current_user.id, message=user_message, is_ai=False)
-    db.session.add(user_msg_db)
-    db.session.commit()
-
-    # Retrieve recent conversation history for context (last 20 messages)
+    # Retrieve recent conversation history (last 20 messages)
     recent_msgs = (
         ChatMessage.query.filter_by(user_id=current_user.id)
-        .order_by(ChatMessage.timestamp.asc())
+        .order_by(ChatMessage.timestamp.desc())
         .limit(20)
         .all()
     )
+    recent_msgs.reverse()  # oldest first
 
-    # Format history for multi-agent system: list of {role, content}
-    formatted_history = []
+    conversation_history = []
     for msg in recent_msgs:
         role = "assistant" if msg.is_ai else "user"
-        formatted_history.append({"role": role, "content": msg.message})
+        conversation_history.append({"role": role, "content": msg.message})
 
-    # Use orchestrator to handle query with multi-agent system
-    ai_response = orchestrator.handle_query(user_message, formatted_history)
+    try:
+        # Initialize MCP client with async context manager
+        async with MCPClientWrapper() as mcp_client:
+            # Instantiate agents with the MCP client and LLM callable
+            todo_agent = TodoAgent(mcp_client)
+            calculator_agent = CalculatorAgent(mcp_client)
+            rag_agent = RAGAgent(llm_callable)
 
-    # Save AI response in DB
-    ai_msg_db = ChatMessage(user_id=current_user.id, message=ai_response, is_ai=True)
-    db.session.add(ai_msg_db)
-    db.session.commit()
+            # Create orchestrator with all agents
+            orchestrator = AgentOrchestrator({
+                'todo': todo_agent,
+                'calculator': calculator_agent,
+                'rag': rag_agent,
+            })
+
+            # Delegate query to appropriate agent
+            ai_response = await orchestrator.handle_query(user_message, conversation_history)
+
+    except Exception as e:
+        logging.error(f"Error during chat message processing: {e}", exc_info=True)
+        return jsonify({"error": "Failed to process your request."}), 500
+    
+    # Save user message and AI response to DB
+    try:
+        user_msg_db = ChatMessage(user_id=current_user.id, message=user_message, is_ai=False)
+        ai_msg_db = ChatMessage(user_id=current_user.id, message=ai_response, is_ai=True)
+        db.session.add_all([user_msg_db, ai_msg_db])
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"DB error saving chat messages: {e}", exc_info=True)
+        return jsonify({"error": "Failed to save chat messages."}), 500
 
     return jsonify({"response": ai_response})

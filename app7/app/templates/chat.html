@@ -1,49 +1,124 @@
-<!-- app/templates/chat.html -->
 {% extends "base.html" %}
 {% block title %}Chat with AI{% endblock %}
 {% block content %}
 <h1>Chat with AI</h1>
 
-<div id="chat-box" style="border:1px solid #ccc; height:400px; overflow-y:auto; padding:10px;">
+<div id="chat-box" 
+     style="border:1px solid #ccc; height:400px; overflow-y:auto; padding:10px;" 
+     aria-live="polite" aria-atomic="false" role="log" aria-relevant="additions">
   {% for msg in messages %}
-    <p><strong>{{ 'AI' if msg.is_ai else 'You' }}:</strong> {{ msg.message }}</p>
+    <p class="{{ 'ai-message' if msg.is_ai else 'user-message' }}">
+      <strong>{{ 'AI' if msg.is_ai else 'You' }}:</strong> {{ msg.message }}
+    </p>
   {% else %}
     <p>No messages yet. Start chatting below.</p>
   {% endfor %}
 </div>
 
-<form id="chat-form" style="margin-top:10px;">
+<form id="chat-form" style="margin-top:10px;" aria-label="Chat input form">
+  <label for="message-input" class="sr-only">Type your message</label>
   <textarea id="message-input" rows="3" cols="60" placeholder="Type your message..." required></textarea><br>
   <button type="submit">Send</button>
 </form>
+
+<style>
+  /* Screen reader only */
+  .sr-only {
+    position: absolute;
+    width: 1px; height: 1px;
+    padding: 0; margin: -1px;
+    overflow: hidden;
+    clip: rect(0,0,0,0);
+    border: 0;
+  }
+  /* Message styling */
+  .user-message {
+    text-align: right;
+    color: #1a73e8;
+    background-color: #e8f0fe;
+    padding: 5px 10px;
+    border-radius: 10px;
+    margin: 5px 0;
+    max-width: 70%;
+    margin-left: auto;
+  }
+  .ai-message {
+    text-align: left;
+    color: #202124;
+    background-color: #f1f3f4;
+    padding: 5px 10px;
+    border-radius: 10px;
+    margin: 5px 0;
+    max-width: 70%;
+    margin-right: auto;
+  }
+  .typing-indicator {
+    font-style: italic;
+    color: #888;
+    margin: 5px 0;
+  }
+</style>
 
 <script>
   const chatBox = document.getElementById('chat-box');
   const chatForm = document.getElementById('chat-form');
   const messageInput = document.getElementById('message-input');
+  const sendButton = chatForm.querySelector('button');
 
   function addMessage(sender, text) {
     const p = document.createElement('p');
-    p.innerHTML = `<strong>${sender}:</strong> ${text}`;
+    p.className = sender === 'You' ? 'user-message' : 'ai-message';
+
+    const strong = document.createElement('strong');
+    strong.textContent = `${sender}: `;
+    p.appendChild(strong);
+
+    const span = document.createElement('span');
+    span.textContent = text;
+    p.appendChild(span);
+
     chatBox.appendChild(p);
     chatBox.scrollTop = chatBox.scrollHeight;
   }
+
+  let typingIndicator;
 
   chatForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const message = messageInput.value.trim();
     if (!message) return;
+
     addMessage('You', message);
     messageInput.value = '';
     chatBox.scrollTop = chatBox.scrollHeight;
 
-    const response = await fetch('{{ url_for("chat.chat_message") }}', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({message})
-    });
-    const data = await response.json();
-    addMessage('AI', data.response);
+    sendButton.disabled = true;
+
+    typingIndicator = document.createElement('p');
+    typingIndicator.textContent = 'AI is typing...';
+    typingIndicator.className = 'typing-indicator';
+    chatBox.appendChild(typingIndicator);
+    chatBox.scrollTop = chatBox.scrollHeight;
+
+    try {
+      const response = await fetch('{{ url_for("chat.chat_message") }}', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({message})
+      });
+      if (!response.ok) {
+        throw new Error(`Server error: ${response.statusText}`);
+      }
+      const data = await response.json();
+      chatBox.removeChild(typingIndicator);
+      addMessage('AI', data.response || 'No response from AI.');
+    } catch (error) {
+      chatBox.removeChild(typingIndicator);
+      addMessage('AI', `Error: ${error.message}`);
+    } finally {
+      sendButton.disabled = false;
+      messageInput.focus();
+    }
   });
 </script>
 {% endblock %}

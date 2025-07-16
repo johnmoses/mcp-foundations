@@ -1,14 +1,19 @@
-# services/mcp_client.py
+# app/services/mcp_client.py
+
 import asyncio
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+
 
 class MCPClientWrapper:
     def __init__(self, server_command="python", server_args=None):
         if server_args is None:
             server_args = ["mcp_server.py"]
-        self.server_params = StdioServerParameters(command=server_command, args=server_args)
+        self.server_params = StdioServerParameters(
+            command=server_command, args=server_args
+        )
         self.session = None
+        self._stdio_client = None
 
     async def __aenter__(self):
         self._stdio_client = await stdio_client(self.server_params).__aenter__()
@@ -18,23 +23,24 @@ class MCPClientWrapper:
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
-        await self.session.__aexit__(exc_type, exc, tb)
-        await self._stdio_client.__aexit__(exc_type, exc, tb)
+        if self.session:
+            await self.session.__aexit__(exc_type, exc, tb)
+        if self._stdio_client:
+            await self._stdio_client.__aexit__(exc_type, exc, tb)
 
-    async def rag_search(self, query: str):
-        return await self.session.call_tool("rag_search", {"query": query})
+    async def call_tool(self, tool_name: str, params: dict = None):
+        if self.session is None:
+            raise RuntimeError("MCPClientWrapper session is not initialized. Use 'async with MCPClientWrapper()'.")
+        if params is None:
+            params = {}
+        return await self.session.call_tool(tool_name, params)
+
+    async def list_todos(self, query: str = None):
+        params = {"query": query} if query else {}
+        return await self.call_tool("list_todos", params)
+
+    async def add_todo(self, task: str):
+        return await self.call_tool("add_todo", {"task": task})
 
     async def calculate(self, expression: str):
-        return await self.session.call_tool("calculate", {"expression": expression})
-
-    async def generate_quiz(self, topic: str, num_questions: int = 5):
-        return await self.session.call_tool("generate_quiz", {"topic": topic, "num_questions": num_questions})
-
-# Usage example
-async def main():
-    async with MCPClientWrapper() as client:
-        result = await client.rag_search("Hello MCP")
-        print(result)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+        return await self.call_tool("calculate", {"expression": expression})
